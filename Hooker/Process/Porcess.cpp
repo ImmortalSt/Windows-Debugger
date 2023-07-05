@@ -12,7 +12,7 @@ static DWORD FindProcessIdByName(const std::wstring& name)
     if (Process32First(snapshot, &process)) {
         do {
             std::wstring pname(converter.from_bytes(process.szExeFile));
-            if (pname.find(name) != std::wstring::npos) {
+            if (pname == name) {
                 pid = process.th32ProcessID;
                 break;
             }
@@ -55,7 +55,75 @@ void Process::init() {
 
     _process = GetPROCESSENTRY32byProcessID(_processId);
     _hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, _processId);
+    initThreads();
+    initProcessInformation();
 }
+
+void Process::initThreads()
+{
+    HANDLE hThreadSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (hThreadSnapshot == INVALID_HANDLE_VALUE) {
+        std::cerr << "Failed to create thread snapshot." << std::endl;
+        return;
+    }
+
+    THREADENTRY32 te32;
+    te32.dwSize = sizeof(THREADENTRY32);
+
+    if (Thread32First(hThreadSnapshot, &te32)) {
+        do {
+            if (te32.th32OwnerProcessID == _processId) {
+                _threads.push_back(te32);
+            }
+        } while (Thread32Next(hThreadSnapshot, &te32));
+    }
+
+    CloseHandle(hThreadSnapshot);
+}
+void Process::initProcessInformation() {
+    PROCESS_BASIC_INFORMATION basic_information;
+    NtQueryInformationProcess(_hProcess, PROCESSINFOCLASS::ProcessBasicInformation, &basic_information, sizeof(PROCESS_BASIC_INFORMATION), NULL);
+    int a = 0;
+}
+void Process::initMainThread() {
+    for each (auto thread in _threads)
+    {
+        HANDLE hThread = OpenThread(THREAD_QUERY_INFORMATION, FALSE, thread.th32ThreadID);
+        if (hThread) {
+            //ThreadInformationClass  tbi;
+            //NtQueryInformationThread(hThread, ThreadBasicInformation, &tbi, sizeof(tbi), nullptr)))
+            
+        }
+
+    }
+}
+
+DWORD_PTR Process::ReadPointer(DWORD_PTR baseAddres, DWORD_PTR offsets[], size_t lenght) {
+    for (int i = 0; i <= lenght - 2; i++) {
+        baseAddres = Process::ReadMemory<DWORD_PTR>(baseAddres + offsets[i]);
+    }
+    return baseAddres + offsets[lenght - 1];
+}
+
+std::string Process::ReadString(DWORD_PTR Addres) {
+    std::string g = "";
+    char a;
+    for (int i = 0; (a = Process::ReadMemory<char>(Addres + i)) != '\0'; i++) {
+        g += a;
+    }
+    return g;
+}
+
+PMEMORY_BASIC_INFORMATION Process::GetRegionInformationByAddress(DWORD_PTR address)
+{
+    PMEMORY_BASIC_INFORMATION result = (PMEMORY_BASIC_INFORMATION)new MEMORY_BASIC_INFORMATION();
+
+    VirtualQueryEx(_hProcess, (LPVOID)address, result, 0x100);
+
+    return result;
+}
+
+
 
 
 /*DWORD GetBaseAddresses(HANDLE processHandle) {
@@ -103,9 +171,6 @@ THREADENTRY32 GetMainThreadId(DWORD processId) {
     return mainThreadId;
 }
 */
-
-
-
 //std::wstring processName = L"a.exe";
     //DWORD Processid = FindProcessIdByName(processName);
     //HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, Processid);
