@@ -12,17 +12,29 @@
 class Process {
 private:
 	DWORD _processId = 0;
-	PROCESSENTRY32 _process = {0};
+	DWORD _mainThreadId = 0;
+	PROCESSENTRY32 _processEntry = {0};
 	HANDLE _hProcess = 0;
+
 	std::list<THREADENTRY32> _threads;
 
 	void init();
 	void initThreads();
-	void initProcessInformation();
-	void initMainThread();
+	void initMainThreadId();
+
+	void 
 public:
+	enum BreakPointCondition {
+		Exec = 0,
+		WO = 1,
+		PORT = 2,
+		RW = 3
+	};
+
 	Process(DWORD processId);
 	Process(std::wstring processName);
+	~Process();
+
 	template<typename T> size_t WriteMemory(DWORD address, T data)
 	{
 		size_t numberOfBytesWritten = 0;
@@ -49,8 +61,16 @@ public:
 		}
 		return result;
 	}
+
+	DWORD GetPID();
 	
 	DWORD64 ReadPointer(DWORD_PTR baseAddres, DWORD_PTR offsets[], size_t lenght);
-	std::string ReadString(DWORD_PTR Addres);
+	std::string ReadString(DWORD_PTR address);
 	PMEMORY_BASIC_INFORMATION GetRegionInformationByAddress(DWORD_PTR address);
+
+	CONTEXT GetContext(DWORD ThreadId = 0);
+
+	void SetHardwareBreakpoint(DWORD_PTR address, BreakPointCondition condition, int len /* 1, 2, 4 or 8*/, DWORD threadId = 0);
+	void DelHardwareBreakpoint(DWORD_PTR address, DWORD threadId = 0);
+	void ClearHardwareBreakpoints(DWORD threadId = 0);
 };
