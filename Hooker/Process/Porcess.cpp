@@ -55,14 +55,17 @@ Process::Process(std::wstring processName)
 Process::~Process()
 {
     ClearHardwareBreakpoints();
+    CloseHandle(_hProcess);
 }
 
 void Process::init() {
     if (_processId == 0) throw std::exception("PID is zero");
     _processEntry = GetPROCESSENTRY32byProcessID(_processId);
     _hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, _processId);
+
     initThreads();
     initMainThreadId();
+    initModules();
 }
 void Process::initThreads()
 {
@@ -74,7 +77,7 @@ void Process::initThreads()
 
     THREADENTRY32 te32;
     te32.dwSize = sizeof(THREADENTRY32);
-    int aq = GetLastError();
+
     if (Thread32First(hThreadSnapshot, &te32)) {
         do {
             if (te32.th32OwnerProcessID == _processId) {
@@ -102,6 +105,66 @@ void Process::initMainThreadId() {
         CloseHandle(hThread);
     }
 }
+void Process::initModules()
+{
+    HANDLE moduleSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, _processId);
+    MODULEENTRY32 lpme;
+    lpme.dwSize = sizeof(MODULEENTRY32);
+    if (Module32First(moduleSnapshot, &lpme)) {
+        do {
+            if (lpme.th32ProcessID == _processId) {
+                _modules.push_back(lpme);
+            }
+        } while (Module32Next(moduleSnapshot, &lpme));
+    }
+}
+
+void Process::SetContext(CONTEXT context, DWORD threadId)
+{
+    if (threadId == 0) {
+        threadId = _mainThreadId;
+    }
+
+    HANDLE hThread = OpenThread(THREAD_ALL_ACCESS, FALSE, threadId);
+    SetThreadContext(hThread, &context);
+    CloseHandle(hThread);
+}
+
+
+void Process::HardwareDebuggerLoop(DWORD threadId)
+{
+    if (threadId == 0) {
+        threadId = _mainThreadId;
+    }
+
+    DEBUG_EVENT DebugEv;
+    
+    ZeroMemory(&DebugEv.u, sizeof(DebugEv.u));
+    DebugEv.dwThreadId = threadId;
+    DebugEv.dwProcessId = _processId;
+    DebugEv.dwDebugEventCode = 0;
+    DebugActiveProcess(_processId);
+    ClearHardwareBreakpoints();
+    
+    SetHardwareBreakpoint(GetModuleAddressByName("a.exe") + 0x1564, Process::EXEC, 1, 0);
+    for (;;) {
+        WaitForDebugEventEx(&DebugEv, INFINITE);
+        
+
+
+
+
+        auto d = GetContext();
+        printf("%X %X\n", GetContext().Rip, DebugEv.dwDebugEventCode);
+        if (DebugEv.dwDebugEventCode == EXCEPTION_DEBUG_EVENT) {
+            printf("%X %X\n", GetContext().Rip, DebugEv.u.Exception);
+        }
+        d.Dr6 &= ~(0xFll);
+        SetContext(d);
+        ContinueDebugEvent(DebugEv.dwProcessId, DebugEv.dwThreadId, DBG_CONTINUE);
+    }
+    int a = 0;
+}
 
 DWORD Process::GetPID()
 {
@@ -114,7 +177,6 @@ DWORD_PTR Process::ReadPointer(DWORD_PTR baseAddres, DWORD_PTR offsets[], size_t
     }
     return baseAddres + offsets[lenght - 1];
 }
-
 std::string Process::ReadString(DWORD_PTR Addres) {
     std::string g = "";
     char a;
@@ -123,7 +185,6 @@ std::string Process::ReadString(DWORD_PTR Addres) {
     }
     return g;
 }
-
 PMEMORY_BASIC_INFORMATION Process::GetRegionInformationByAddress(DWORD_PTR address)
 {
     PMEMORY_BASIC_INFORMATION result = (PMEMORY_BASIC_INFORMATION)new MEMORY_BASIC_INFORMATION();
@@ -132,11 +193,24 @@ PMEMORY_BASIC_INFORMATION Process::GetRegionInformationByAddress(DWORD_PTR addre
 
     return result;
 }
+DWORD_PTR Process::GetModuleAddressByName(std::string name)
+{
 
-void Process::SetHardwareBreakpoint(DWORD_PTR address, BreakPointCondition condition, int len /* 1, 2, 4 or 8*/, DWORD threadId)
+    for each (auto module in _modules)
+    {
+        if (strcmp(module.szModule, name.c_str()) == 0) {
+            return (DWORD_PTR)module.modBaseAddr;
+        }
+    }
+
+    return 0;
+}
+
+
+void Process::SetHardwareBreakpoint(DWORD_PTR address, BreakPointCondition condition, int len /* 1, 2, 4 or 8*/, void (*observer)(CONTEXT), DWORD threadId)
 {
     // https://codeby.net/threads/skrytyj-potencial-registrov-otladki-dr0-dr7.74387/
-
+    
     if (threadId == 0) {
         threadId = _mainThreadId;
     }
@@ -177,13 +251,13 @@ void Process::SetHardwareBreakpoint(DWORD_PTR address, BreakPointCondition condi
     options = options | condition;
 
     context.Dr7 = context.Dr7 | options << 16 + (index * 4);
-    context.Dr7 = context.Dr7 | 1 << (index * 2);
+    context.Dr7 = context.Dr7 | 0b1 << (index * 2);
 
     context.Dr7 = context.Dr7 & 0xFFFFFFFF;
 
-    HANDLE hThread = OpenThread(THREAD_ALL_ACCESS, FALSE, threadId);
-    SetThreadContext(hThread, &context);
-    CloseHandle(hThread);
+    SetContext(context);
+
+    _hardwareObservers[index] = observer;
 }
 void Process::DelHardwareBreakpoint(DWORD_PTR address, DWORD threadId)
 {
@@ -216,9 +290,9 @@ void Process::DelHardwareBreakpoint(DWORD_PTR address, DWORD threadId)
 
     context.Dr7 = context.Dr7 & ~(0b11ll << index * 2);
 
-    HANDLE hThread = OpenThread(THREAD_ALL_ACCESS, FALSE, threadId);
-    SetThreadContext(hThread, &context);
-    CloseHandle(hThread);
+    SetContext(context);
+
+    _hardwareObservers[index] = 0;
 }
 void Process::ClearHardwareBreakpoints(DWORD threadId)
 {
@@ -232,9 +306,12 @@ void Process::ClearHardwareBreakpoints(DWORD threadId)
 
     context.Dr7 = context.Dr7 & ~(0xFFll);
 
-    HANDLE hThread = OpenThread(THREAD_ALL_ACCESS, FALSE, threadId);
-    SetThreadContext(hThread, &context);
-    CloseHandle(hThread);
+    SetContext(context);
+
+    _hardwareObservers[0] = 0;
+    _hardwareObservers[1] = 0;
+    _hardwareObservers[2] = 0;
+    _hardwareObservers[3] = 0;
 
 }
 
@@ -250,7 +327,6 @@ CONTEXT Process::GetContext(DWORD threadId)
     CloseHandle(hThread);
     return context;
 }
-
 
 
 

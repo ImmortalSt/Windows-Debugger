@@ -1,14 +1,17 @@
 ﻿#include "Hooker.h"
 #include "Process/Process.h"
 
+void Observer(CONTEXT context) {
+	printf("%X\n", context.Rip);
+}
+
 int main()
 {
 	Process* process = new Process(L"a.exe");
-	process->SetHardwareBreakpoint(0x333, Process::RW, 4);
-	process->SetHardwareBreakpoint(0x334, Process::RW, 4);
-	process->SetHardwareBreakpoint(0x335, Process::RW, 4);
-	process->DelHardwareBreakpoint(0x334);
-	process->SetHardwareBreakpoint(0x335, Process::RW, 4);
+	
+	//process->SetHardwareBreakpoint(process->GetModuleAddressByName("Counter.exe") + 0x1044, Process::EXEC, 1, &Observer);
+	process->HardwareDebuggerLoop();
+	
 	std::string b = process->ReadString(0x00404000);
 
 	auto a = process->GetRegionInformationByAddress(0x00404004);
