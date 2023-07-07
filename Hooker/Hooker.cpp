@@ -7,10 +7,10 @@ void Observer(CONTEXT context) {
 
 int main()
 {
-	Process* process = new Process(L"a.exe");
+	dbg::Process* process = new dbg::Process(L"a.exe");
 	
-	//process->SetHardwareBreakpoint(process->GetModuleAddressByName("Counter.exe") + 0x1044, Process::EXEC, 1, &Observer);
-	process->HardwareDebuggerLoop();
+	process->EnableDebugging();
+	process->GetMainThread()->HardwareDebuggerLoop();
 	
 	std::string b = process->ReadString(0x00404000);
 

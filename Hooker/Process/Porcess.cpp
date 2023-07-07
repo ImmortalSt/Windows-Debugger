@@ -42,23 +42,22 @@ static PROCESSENTRY32 GetPROCESSENTRY32byProcessID(DWORD _processId) {
     return PROCESSENTRY32();
 }
 
-Process::Process(DWORD processId)
+dbg::Process::Process(DWORD processId)
 {
 	_processId = processId;
     init();
 }
-Process::Process(std::wstring processName)
+dbg::Process::Process(std::wstring processName)
 {
 	_processId = FindProcessIdByName(processName);
     init();
 }
-Process::~Process()
+dbg::Process::~Process()
 {
-    ClearHardwareBreakpoints();
     CloseHandle(_hProcess);
 }
 
-void Process::init() {
+void dbg::Process::init() {
     if (_processId == 0) throw std::exception("PID is zero");
     _processEntry = GetPROCESSENTRY32byProcessID(_processId);
     _hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, _processId);
@@ -67,7 +66,7 @@ void Process::init() {
     initMainThreadId();
     initModules();
 }
-void Process::initThreads()
+void dbg::Process::initThreads()
 {
     HANDLE hThreadSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
     if (hThreadSnapshot == INVALID_HANDLE_VALUE) {
@@ -81,31 +80,31 @@ void Process::initThreads()
     if (Thread32First(hThreadSnapshot, &te32)) {
         do {
             if (te32.th32OwnerProcessID == _processId) {
-                _threads.push_back(te32);
+                _threads.push_back(new dbg::Thread(te32));
             }
         } while (Thread32Next(hThreadSnapshot, &te32));
     }
 
     CloseHandle(hThreadSnapshot);
 }
-void Process::initMainThreadId() {
+void dbg::Process::initMainThreadId() {
     ULONGLONG minTime = MAXULONGLONG;
     for each (auto sThread in _threads)
     {
         FILETIME time[4] = { 0 };
-        HANDLE hThread = OpenThread(THREAD_ALL_ACCESS, FALSE, sThread.th32ThreadID);
+        HANDLE hThread = OpenThread(THREAD_ALL_ACCESS, FALSE, sThread->GetThreadId());
 
         GetThreadTimes(hThread, &time[0], &time[1], &time[2], &time[3]);
         ULONGLONG timeCreated = MAKEULONGLONG(time[0].dwLowDateTime, time[0].dwHighDateTime);
         if (timeCreated < minTime) {
-            _mainThreadId = sThread.th32ThreadID;
+            _mainThread = sThread;
             minTime = timeCreated;
         }
-        
+
         CloseHandle(hThread);
     }
 }
-void Process::initModules()
+void dbg::Process::initModules()
 {
     HANDLE moduleSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, _processId);
     MODULEENTRY32 lpme;
@@ -113,71 +112,35 @@ void Process::initModules()
     if (Module32First(moduleSnapshot, &lpme)) {
         do {
             if (lpme.th32ProcessID == _processId) {
-                _modules.push_back(lpme);
+                _modules.push_back(new Module(lpme));
             }
         } while (Module32Next(moduleSnapshot, &lpme));
     }
 }
 
-void Process::SetContext(CONTEXT context, DWORD threadId)
+void dbg::Process::EnableDebugging()
 {
-    if (threadId == 0) {
-        threadId = _mainThreadId;
-    }
-
-    HANDLE hThread = OpenThread(THREAD_ALL_ACCESS, FALSE, threadId);
-    SetThreadContext(hThread, &context);
-    CloseHandle(hThread);
-}
-
-
-void Process::HardwareDebuggerLoop(DWORD threadId)
-{
-    if (threadId == 0) {
-        threadId = _mainThreadId;
-    }
-
-    DEBUG_EVENT DebugEv;
-    
-    ZeroMemory(&DebugEv.u, sizeof(DebugEv.u));
-    DebugEv.dwThreadId = threadId;
-    DebugEv.dwProcessId = _processId;
-    DebugEv.dwDebugEventCode = 0;
     DebugActiveProcess(_processId);
-    ClearHardwareBreakpoints();
-    
-    SetHardwareBreakpoint(GetModuleAddressByName("a.exe") + 0x1564, Process::EXEC, 1, 0);
-    for (;;) {
-        WaitForDebugEventEx(&DebugEv, INFINITE);
-        
-
-
-
-
-        auto d = GetContext();
-        printf("%X %X\n", GetContext().Rip, DebugEv.dwDebugEventCode);
-        if (DebugEv.dwDebugEventCode == EXCEPTION_DEBUG_EVENT) {
-            printf("%X %X\n", GetContext().Rip, DebugEv.u.Exception);
-        }
-        d.Dr6 &= ~(0xFll);
-        SetContext(d);
-        ContinueDebugEvent(DebugEv.dwProcessId, DebugEv.dwThreadId, DBG_CONTINUE);
-    }
-    int a = 0;
+    _isDebugging = true;
+}
+void dbg::Process::DisableDebugging()
+{
+    DebugActiveProcessStop(_processId);
+    _isDebugging = false;
 }
 
-DWORD Process::GetPID()
+DWORD dbg::Process::GetPID()
 {
     return _processId;
 }
 
-DWORD_PTR Process::ReadPointer(DWORD_PTR baseAddres, DWORD_PTR offsets[], size_t lenght) {
+DWORD_PTR dbg::Process::ReadPointer(DWORD_PTR baseAddres, DWORD_PTR offsets[], size_t lenght) {
     for (int i = 0; i <= lenght - 2; i++) {
         baseAddres = Process::ReadMemory<DWORD_PTR>(baseAddres + offsets[i]);
     }
     return baseAddres + offsets[lenght - 1];
 }
-std::string Process::ReadString(DWORD_PTR Addres) {
+std::string dbg::Process::ReadString(DWORD_PTR Addres) {
     std::string g = "";
     char a;
     for (int i = 0; (a = Process::ReadMemory<char>(Addres + i)) != '\0'; i++) {
@@ -185,7 +148,7 @@ std::string Process::ReadString(DWORD_PTR Addres) {
     }
     return g;
 }
-PMEMORY_BASIC_INFORMATION Process::GetRegionInformationByAddress(DWORD_PTR address)
+PMEMORY_BASIC_INFORMATION dbg::Process::GetRegionInformationByAddress(DWORD_PTR address)
 {
     PMEMORY_BASIC_INFORMATION result = (PMEMORY_BASIC_INFORMATION)new MEMORY_BASIC_INFORMATION();
 
@@ -193,143 +156,23 @@ PMEMORY_BASIC_INFORMATION Process::GetRegionInformationByAddress(DWORD_PTR addre
 
     return result;
 }
-DWORD_PTR Process::GetModuleAddressByName(std::string name)
+DWORD_PTR dbg::Process::GetModuleAddressByName(std::string name)
 {
 
     for each (auto module in _modules)
     {
-        if (strcmp(module.szModule, name.c_str()) == 0) {
-            return (DWORD_PTR)module.modBaseAddr;
+        if (strcmp(module->GetName(), name.c_str()) == 0) {
+            return module->GetBaseAddress();
         }
     }
 
     return 0;
 }
 
-
-void Process::SetHardwareBreakpoint(DWORD_PTR address, BreakPointCondition condition, int len /* 1, 2, 4 or 8*/, void (*observer)(CONTEXT), DWORD threadId)
+dbg::Thread* dbg::Process::GetMainThread()
 {
-    // https://codeby.net/threads/skrytyj-potencial-registrov-otladki-dr0-dr7.74387/
-    
-    if (threadId == 0) {
-        threadId = _mainThreadId;
-    }
-
-    if (len != 1 && len != 2 && len != 4 && len != 8) throw std::exception("Len should be 1, or 2, or 4, or 8");
-
-    CONTEXT context = GetContext(threadId);
-
-    int index = -1;
-
-    if (context.Dr0 == 0) {
-        index = 0;
-        context.Dr0 = address;
-    }
-    else if (context.Dr1 == 0) {
-        index = 1;
-        context.Dr1 = address;
-    }
-    else if (context.Dr2 == 0) {
-        index = 2;
-        context.Dr2 = address;
-    }
-    else if (context.Dr3 == 0) {
-        index = 3;
-        context.Dr3 = address;
-    }
-    else throw std::exception("No space for breakpoint");
-
-    byte options = 0;
-
-    if (len == 1) options = 0;
-    else if (len == 2) options = 1;
-    else if (len == 4) options = 3;
-    else if (len == 8) options = 2;
-
-    options = options << 2;
-
-    options = options | condition;
-
-    context.Dr7 = context.Dr7 | options << 16 + (index * 4);
-    context.Dr7 = context.Dr7 | 0b1 << (index * 2);
-
-    context.Dr7 = context.Dr7 & 0xFFFFFFFF;
-
-    SetContext(context);
-
-    _hardwareObservers[index] = observer;
+    return _mainThread;
 }
-void Process::DelHardwareBreakpoint(DWORD_PTR address, DWORD threadId)
-{
-    if (threadId == 0) {
-        threadId = _mainThreadId;
-    }
-
-    CONTEXT context = GetContext(threadId);
-
-    int index = -1;
-    if (context.Dr0 == address) {
-        index = 0;
-        context.Dr0 = 0;
-    }
-    else if (context.Dr1 == address) {
-        index = 1;
-        context.Dr1 = 0;
-    }
-    else if (context.Dr2 == address) {
-        index = 2;
-        context.Dr2 = 0;
-    }
-    else if (context.Dr3 == address) {
-        index = 3;
-        context.Dr3 = 0;
-    }
-    else {
-        throw std::exception("There is no such breakpoint");
-    }
-
-    context.Dr7 = context.Dr7 & ~(0b11ll << index * 2);
-
-    SetContext(context);
-
-    _hardwareObservers[index] = 0;
-}
-void Process::ClearHardwareBreakpoints(DWORD threadId)
-{
-    if (threadId == 0) {
-        threadId = _mainThreadId;
-    }
-
-    CONTEXT context = GetContext(threadId);
-
-    context.Dr0 = context.Dr1 = context.Dr2 = context.Dr3 = 0;
-
-    context.Dr7 = context.Dr7 & ~(0xFFll);
-
-    SetContext(context);
-
-    _hardwareObservers[0] = 0;
-    _hardwareObservers[1] = 0;
-    _hardwareObservers[2] = 0;
-    _hardwareObservers[3] = 0;
-
-}
-
-CONTEXT Process::GetContext(DWORD threadId)
-{
-    if (threadId == 0) {
-        threadId = _mainThreadId;
-    }
-    HANDLE hThread = OpenThread(THREAD_ALL_ACCESS, FALSE, threadId);
-    CONTEXT context = {0};
-    context.ContextFlags = CONTEXT_ALL;
-    GetThreadContext(hThread, &context);
-    CloseHandle(hThread);
-    return context;
-}
-
-
-
 
 /*DWORD GetBaseAddresses(HANDLE processHandle) {
 
