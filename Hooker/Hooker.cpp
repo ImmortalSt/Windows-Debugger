@@ -2,14 +2,15 @@
 #include "Process/Process.h"
 
 void Observer(CONTEXT context) {
-	printf("%X\n", context.Rip);
+	printf("%d\n", context.Rsi);
 }
 
 int main()
 {
-	dbg::Process* process = new dbg::Process(L"a.exe");
+	dbg::Process* process = new dbg::Process(L"Counter.exe");
 	
 	process->EnableDebugging();
+	process->GetMainThread()->SetHardwareBreakpoint(process->GetModuleAddressByName("Counter.exe") + 0x1052, dbg::Thread::EXEC, 1, &Observer);
 	process->GetMainThread()->HardwareDebuggerLoop();
 	
 	std::string b = process->ReadString(0x00404000);

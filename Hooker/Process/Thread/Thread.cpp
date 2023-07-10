@@ -16,21 +16,33 @@ DWORD dbg::Thread::GetThreadId()
 
 void dbg::Thread::HardwareDebuggerLoop()
 {
-    
     DEBUG_EVENT DebugEv;
-    
-    ZeroMemory(&DebugEv.u, sizeof(DebugEv.u));
+
+    ZeroMemory(&DebugEv, sizeof(DebugEv));
     DebugEv.dwThreadId = _threadId;
     DebugEv.dwProcessId = _processId;
-    DebugEv.dwDebugEventCode = 0;
-
-    SetHardwareBreakpoint(0x404000 + 0x1564, EXEC, 1, 0);
-    WaitForDebugEventEx(&DebugEv, INFINITE);
     for (;;) {
-        DoDebugStep();
-        printf("%X\n", GetContext().Rip);
+        WaitForDebugEventEx(&DebugEv, INFINITE);
+
+        auto context = GetContext();
+        
+        int Drx = -1;
+        if (context.Rip == context.Dr0) Drx = 0;
+        else if (context.Rip == context.Dr1) Drx = 1;
+        else if (context.Rip == context.Dr2) Drx = 2;
+        else if (context.Rip == context.Dr3) Drx = 3;
+
+        if (Drx != -1) {
+            DoDebugStep();
+        }
+
+        ContinueDebugEvent(DebugEv.dwProcessId, DebugEv.dwThreadId, DBG_CONTINUE); // There should be DebugEv.dwProcessId and DebugEv.dwThreadId. Not _processId and _threadId.
+        
+        if (Drx != -1) {
+            _hardwareBreakpointObservers[Drx](context);
+        }
+
     }
-    int a = 0;
 }
 void dbg::Thread::SetHardwareBreakpoint(DWORD_PTR address, BreakPointCondition condition, int len, void(*observer)(CONTEXT))
 {
@@ -40,22 +52,22 @@ void dbg::Thread::SetHardwareBreakpoint(DWORD_PTR address, BreakPointCondition c
 
     CONTEXT context = GetContext();
 
-    int index = -1;
+    int Drx = -1;
 
     if (context.Dr0 == 0) {
-        index = 0;
+        Drx = 0;
         context.Dr0 = address;
     }
     else if (context.Dr1 == 0) {
-        index = 1;
+        Drx = 1;
         context.Dr1 = address;
     }
     else if (context.Dr2 == 0) {
-        index = 2;
+        Drx = 2;
         context.Dr2 = address;
     }
     else if (context.Dr3 == 0) {
-        index = 3;
+        Drx = 3;
         context.Dr3 = address;
     }
     else throw std::exception("No space for breakpoint");
@@ -71,46 +83,46 @@ void dbg::Thread::SetHardwareBreakpoint(DWORD_PTR address, BreakPointCondition c
 
     options = options | condition;
 
-    context.Dr7 = context.Dr7 | options << 16 + (index * 4);
-    context.Dr7 = context.Dr7 | 0b1 << (index * 2);
+    context.Dr7 = context.Dr7 | options << 16 + (Drx * 4);
+    context.Dr7 = context.Dr7 | 0b1 << (Drx * 2);
 
     context.Dr7 = context.Dr7 & 0xFFFFFFFF;
 
     SetContext(context);
 
-    _hardwareBreakpointObservers[index] = observer;
+    _hardwareBreakpointObservers[Drx] = observer;
 }
 void dbg::Thread::DelHardwareBreakpoint(DWORD_PTR address)
 {
 
     CONTEXT context = GetContext();
 
-    int index = -1;
+    int Drx = -1;
     if (context.Dr0 == address) {
-        index = 0;
+        Drx = 0;
         context.Dr0 = 0;
     }
     else if (context.Dr1 == address) {
-        index = 1;
+        Drx = 1;
         context.Dr1 = 0;
     }
     else if (context.Dr2 == address) {
-        index = 2;
+        Drx = 2;
         context.Dr2 = 0;
     }
     else if (context.Dr3 == address) {
-        index = 3;
+        Drx = 3;
         context.Dr3 = 0;
     }
     else {
         throw std::exception("There is no such breakpoint");
     }
 
-    context.Dr7 = context.Dr7 & ~(0b11ll << index * 2);
+    context.Dr7 = context.Dr7 & ~(0b11ll << Drx * 2); // This is execute automatically
 
     SetContext(context);
 
-    _hardwareBreakpointObservers[index] = 0;
+    _hardwareBreakpointObservers[Drx] = 0;
 }
 void dbg::Thread::ClearHardwareBreakpoints()
 {
@@ -129,26 +141,66 @@ void dbg::Thread::ClearHardwareBreakpoints()
     _hardwareBreakpointObservers[3] = 0;
 }
 
-// should be called before WaitForDebugEventEx
+
+
+
+void dbg::Thread::DisableHardwareBreakPoint(int Drx)
+{
+    auto context = GetContext();
+    context.Dr7 &= ~(0b11ll) << (Drx * 2);
+    SetContext(context);
+}
+void dbg::Thread::EnableHardwareBreakPoint(int Drx)
+{
+    auto context = GetContext();
+    context.Dr7 |= (0b11ll) << (Drx * 2);
+    SetContext(context);
+}
+void dbg::Thread::DisableAllHardwareBreakPoint()
+{
+    auto context = GetContext();
+    context.Dr7 &= ~(0xFF);
+    SetContext(context);
+}
+void dbg::Thread::EnableHardwareBreakPoint()
+{
+    auto context = GetContext();
+    context.Dr7 |= 0b01010101;
+    SetContext(context);
+}
+
+
+// should be called between WaitForDebugEventEx and ContinueDebugEvent
 void dbg::Thread::DoDebugStep()
 {
-    CONTEXT context = GetContext();
-    context.EFlags |= 0b100000000;
-    SetContext(context);
-    ContinueDebugEvent(_processId, _threadId, DBG_CONTINUE);
-
     DEBUG_EVENT DebugEv;
+
+    auto oldContext = GetContext();
+    DisableAllHardwareBreakPoint();
 
     ZeroMemory(&DebugEv.u, sizeof(DebugEv.u));
     DebugEv.dwThreadId = _threadId;
     DebugEv.dwProcessId = _processId;
-    WaitForDebugEventEx(&DebugEv, INFINITE);
 
-    while (DebugEv.u.Exception.ExceptionRecord.ExceptionCode != EXCEPTION_SINGLE_STEP) {
-        printf("!!!!!!!!!!!!!!!!!!!!!!!!!%d\n", DebugEv.u.Exception.ExceptionRecord.ExceptionCode);
-        ContinueDebugEvent(_processId, _threadId, DBG_CONTINUE); // <---------------------------- НЕ фиксирует SINGLE STEP
+    while (true) {
+        CONTEXT context = GetContext();
+        context.EFlags |= 0b100000000;
+        SetContext(context);
+
+        ContinueDebugEvent(DebugEv.dwProcessId, DebugEv.dwThreadId, DBG_CONTINUE);
         WaitForDebugEventEx(&DebugEv, INFINITE);
+        if (DebugEv.u.Exception.ExceptionRecord.ExceptionCode == 0x80000004) break;
     }
+
+    auto context = GetContext();
+
+    context.Dr0 = oldContext.Dr0;
+    context.Dr1 = oldContext.Dr1;
+    context.Dr2 = oldContext.Dr2;
+    context.Dr3 = oldContext.Dr3;
+    context.Dr7 = oldContext.Dr7;
+
+    SetContext(context);
 }
 
 

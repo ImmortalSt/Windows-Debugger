@@ -24,6 +24,11 @@ namespace dbg {
 		void DelHardwareBreakpoint(DWORD_PTR address);
 		void ClearHardwareBreakpoints();
 
+		void DisableHardwareBreakPoint(int Drx);
+		void EnableHardwareBreakPoint(int Drx);
+		void DisableAllHardwareBreakPoint();
+		void EnableHardwareBreakPoint();
+
 		void DoDebugStep();
 
 		CONTEXT GetContext();
