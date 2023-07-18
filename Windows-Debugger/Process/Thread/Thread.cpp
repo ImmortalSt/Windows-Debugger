@@ -171,7 +171,7 @@ void dbg::Thread::EnableHardwareBreakPoint()
 
 
 // should be called between WaitForDebugEventEx and ContinueDebugEvent
-void dbg::Thread::DoDebugStep()
+void dbg::Thread::DoDebugStep() 
 {
     DEBUG_EVENT DebugEv;
 
