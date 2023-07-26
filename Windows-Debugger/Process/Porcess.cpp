@@ -89,7 +89,7 @@ void dbg::Process::initThreads()
 }
 void dbg::Process::initMainThreadId() {
     ULONGLONG minTime = MAXULONGLONG;
-    for each (auto sThread in _threads)
+    for (auto sThread : _threads)
     {
         FILETIME time[4] = { 0 };
         HANDLE hThread = OpenThread(THREAD_ALL_ACCESS, FALSE, sThread->GetThreadId());
@@ -120,11 +120,14 @@ void dbg::Process::initModules()
 
 void dbg::Process::EnableDebugging()
 {
+    if (_isDebugging) return;
+
     DebugActiveProcess(_processId);
     _isDebugging = true;
 }
 void dbg::Process::DisableDebugging()
 {
+    if (!_isDebugging) return;
     DebugActiveProcessStop(_processId);
     _isDebugging = false;
 }
@@ -140,26 +143,26 @@ DWORD_PTR dbg::Process::ReadPointer(DWORD_PTR baseAddres, DWORD_PTR offsets[], s
     }
     return baseAddres + offsets[lenght - 1];
 }
-std::string dbg::Process::ReadString(DWORD_PTR Addres) {
-    std::string g = "";
-    char a;
-    for (int i = 0; (a = Process::ReadMemory<char>(Addres + i)) != '\0'; i++) {
-        g += a;
+std::string dbg::Process::ReadString(DWORD_PTR address) {
+    std::string result = "";
+    char tempChar;
+    for (int i = 0; (tempChar = Process::ReadMemory<char>(address + i)) != '\0'; i++) {
+        result += tempChar;
     }
-    return g;
+    return result;
 }
-PMEMORY_BASIC_INFORMATION dbg::Process::GetRegionInformationByAddress(DWORD_PTR address)
+MEMORY_BASIC_INFORMATION dbg::Process::GetRegionInformationByAddress(DWORD_PTR address)
 {
-    PMEMORY_BASIC_INFORMATION result = (PMEMORY_BASIC_INFORMATION)new MEMORY_BASIC_INFORMATION();
+    MEMORY_BASIC_INFORMATION result;
 
-    VirtualQueryEx(_hProcess, (LPVOID)address, result, 0x100);
+    VirtualQueryEx(_hProcess, (LPVOID)address, &result, 0x100);
 
     return result;
 }
 DWORD_PTR dbg::Process::GetModuleAddressByName(std::string name)
 {
 
-    for each (auto module in _modules)
+    for (auto module : _modules)
     {
         if (strcmp(module->GetName(), name.c_str()) == 0) {
             return module->GetBaseAddress();
@@ -173,65 +176,3 @@ dbg::Thread* dbg::Process::GetMainThread()
 {
     return _mainThread;
 }
-
-/*DWORD GetBaseAddresses(HANDLE processHandle) {
-
-    HMODULE moduleHandles[1024];
-    DWORD bytesNeeded;
-    if (EnumProcessModules(processHandle, moduleHandles, sizeof(moduleHandles), &bytesNeeded)) {
-        DWORD numModules = bytesNeeded / sizeof(HMODULE);
-        for (DWORD i = 0; i < numModules; i++) {
-            TCHAR moduleName[MAX_PATH];
-            if (GetModuleFileNameEx(processHandle, moduleHandles[i], moduleName, MAX_PATH)) {
-                MODULEINFO moduleInfo;
-                if (GetModuleInformation(processHandle, moduleHandles[i], &moduleInfo, sizeof(moduleInfo))) {
-                    return (DWORD)moduleInfo.lpBaseOfDll;
-                }
-            }
-        }
-    }
-    return 0;
-}
-
-THREADENTRY32 GetMainThreadId(DWORD processId) {
-    THREADENTRY32 mainThreadId;
-    mainThreadId.cntUsage = -1;
-
-    HANDLE threadSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-    if (threadSnapshot != INVALID_HANDLE_VALUE) {
-        THREADENTRY32 threadEntry = { sizeof(threadEntry) };
-
-        if (Thread32First(threadSnapshot, &threadEntry)) {
-            do {
-
-                if (threadEntry.th32OwnerProcessID == processId) {
-
-                    if (mainThreadId.cntUsage == -1) {
-                        mainThreadId = threadEntry;
-                    }
-                }
-            } while (Thread32Next(threadSnapshot, &threadEntry));
-        }
-
-        CloseHandle(threadSnapshot);
-    }
-
-    return mainThreadId;
-}
-*/
-//std::wstring processName = L"a.exe";
-    //DWORD Processid = FindProcessIdByName(processName);
-    //HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, Processid);
-    //CONTEXT Context;
-    //Context.ContextFlags = CONTEXT_ALL;
-    //GetThreadContext(hProcess, &Context);
-    //DWORD BaseAddress = GetBaseAddresses(hProcess);
-    //Context.Dr0 = BaseAddress + BPAddresses[0];
-    //SetThreadContext(hProcess, &Context);
-    //DEBUG_EVENT debugEvent;
-    //debugEvent.dwProcessId = Processid;
-    //debugEvent.dwThreadId = GetMainThreadId(Processid).th32OwnerProcessID;
-    //WaitForDebugEvent(&debugEvent, INFINITE);
-    //int a = GetLastError();
-    ////DebugActiveProcess(Processid);
-    ////DebugActiveProcessStop(Processid)bv

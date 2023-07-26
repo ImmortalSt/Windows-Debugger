@@ -14,14 +14,14 @@ DWORD dbg::Thread::GetThreadId()
 }
 
 
-void dbg::Thread::HardwareDebuggerLoop()
+void dbg::Thread::HardwareDebugLoop()
 {
     DEBUG_EVENT DebugEv;
 
     ZeroMemory(&DebugEv, sizeof(DebugEv));
     DebugEv.dwThreadId = _threadId;
     DebugEv.dwProcessId = _processId;
-    for (;;) {
+    while(true) {
         WaitForDebugEventEx(&DebugEv, INFINITE);
 
         auto context = GetContext();
@@ -44,7 +44,7 @@ void dbg::Thread::HardwareDebuggerLoop()
 
     }
 }
-void dbg::Thread::SetHardwareBreakpoint(DWORD_PTR address, BreakPointCondition condition, int len, void(*observer)(CONTEXT))
+void dbg::Thread::SetHardwareBreakpoint(DWORD_PTR address, BreakPointCondition condition, int len, ContextFunction observer)
 {
     // https://codeby.net/threads/skrytyj-potencial-registrov-otladki-dr0-dr7.74387/
 
@@ -131,7 +131,7 @@ void dbg::Thread::ClearHardwareBreakpoints()
 
     context.Dr0 = context.Dr1 = context.Dr2 = context.Dr3 = 0;
 
-    context.Dr7 = context.Dr7 & ~(0xFFll);
+    context.Dr7 &= ~(0xFFll);
 
     SetContext(context);
 
@@ -141,8 +141,20 @@ void dbg::Thread::ClearHardwareBreakpoints()
     _hardwareBreakpointObservers[3] = 0;
 }
 
+size_t dbg::Thread::WriteMemory(DWORD address, byte data)
+{
+    size_t numberOfBytesWritten = 0;
+    HANDLE _hProcess = OpenProcess(PROCESS_ALL_ACCESS, false, _processId);
 
+    DWORD oldprotect;
+    VirtualProtectEx(_hProcess, (LPVOID)address, sizeof(byte), PAGE_EXECUTE_READWRITE, &oldprotect);
+    WriteProcessMemory(_hProcess, (LPVOID)address, &data, sizeof(byte), &numberOfBytesWritten);
+    VirtualProtectEx(_hProcess, (LPVOID)address, sizeof(byte), oldprotect, &oldprotect);
 
+    CloseHandle(_hProcess);
+
+    return numberOfBytesWritten;
+}
 
 void dbg::Thread::DisableHardwareBreakPoint(int Drx)
 {
@@ -167,6 +179,72 @@ void dbg::Thread::EnableHardwareBreakPoint()
     auto context = GetContext();
     context.Dr7 |= 0b01010101;
     SetContext(context);
+}
+
+
+void dbg::Thread::SetSoftwareExecutionBreakpoint(DWORD_PTR address, ContextFunction observer) {
+    _softwareExecutionBreakpoint[address] = SoftwareBreakpoint { address, observer, 0 };
+}
+void dbg::Thread::DelSoftwareExecutionBreakpoint(DWORD_PTR address) {
+    _softwareExecutionBreakpoint.erase(address);
+}
+void dbg::Thread::SoftwareExecutionDebugLoop() {
+    HANDLE _hProcess = OpenProcess(PROCESS_ALL_ACCESS, false, _processId);
+    for (auto& [address, breakpoint] : _softwareExecutionBreakpoint) {
+        PMEMORY_BASIC_INFORMATION segmentInfo = new MEMORY_BASIC_INFORMATION;
+        VirtualQueryEx(_hProcess, (LPVOID)address, segmentInfo, 0x100);
+        int a = GetLastError();
+        if (segmentInfo->Protect == PAGE_EXECUTE_READ) {
+            int oldByte = 0;
+            size_t numberOfBytesRead;
+            ReadProcessMemory(_hProcess, (LPVOID)address, &oldByte, 1, &numberOfBytesRead);
+            breakpoint.oldByte = oldByte;
+
+            DWORD oldprotect;
+            char data = 0xCC;
+            WriteMemory(address, 0xCC);
+        }
+#ifdef _DEBUG
+        else {
+            std::cout << "The software breakpoint in the segment is not PAGE_EXECUTE_READ\n";
+        }
+        delete segmentInfo;
+#endif 
+    }
+
+    DEBUG_EVENT DebugEv;
+
+    ZeroMemory(&DebugEv, sizeof(DebugEv));
+    DebugEv.dwThreadId = _threadId;
+    DebugEv.dwProcessId = _processId;
+
+
+    while (true) {
+        ContextFunction futureFunction = 0;
+
+        WaitForDebugEventEx(&DebugEv, INFINITE);
+        
+        auto context = GetContext();
+
+        if (DebugEv.dwDebugEventCode == EXCEPTION_DEBUG_EVENT) {
+            DWORD_PTR rip = context.Rip - 1;
+            auto it = _softwareExecutionBreakpoint.find(rip);
+            if (it != _softwareExecutionBreakpoint.end()) 
+            {                    
+                WriteMemory(rip, it->second.oldByte);
+                context.Rip -= 1;
+                SetContext(context);
+                DoDebugStep();
+                auto d = GetContext();
+                WriteMemory(rip, 0xCC);
+                futureFunction = it->second.fucntion;
+            }
+        }
+        ContinueDebugEvent(DebugEv.dwProcessId, DebugEv.dwThreadId, DBG_CONTINUE); // There should be DebugEv.dwProcessId and DebugEv.dwThreadId. Not _processId and _threadId.
+
+        if (futureFunction)
+            futureFunction(context);
+    }
 }
 
 
@@ -219,4 +297,3 @@ void dbg::Thread::SetContext(CONTEXT context)
     SetThreadContext(hThread, &context);
     CloseHandle(hThread);
 }
-

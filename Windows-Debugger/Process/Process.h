@@ -21,7 +21,6 @@ namespace dbg {
 		2) KeInitializeEvent (wdm.h) (kernel)
 	*/
 
-
 	class Process {
 	private:
 		
@@ -32,6 +31,7 @@ namespace dbg {
 		std::list<Module*> _modules;
 		std::list<Thread*> _threads;
 		Thread* _mainThread = 0;
+
 
 		bool _isDebugging = 0;
 
@@ -55,21 +55,15 @@ namespace dbg {
 			WriteProcessMemory(_hProcess, (LPVOID)address, &data, sizeof(T), &numberOfBytesWritten);
 			VirtualProtectEx(_hProcess, (LPVOID)address, sizeof(T), oldprotect, &oldprotect);
 
-			if (GetLastError() != 0) {
-				std::cout << "WriteMemory Error with error: " << GetLastError() << "\n";
-				throw std::exception("WriteMemory Error with error: " + GetLastError());
-			}
+
 			return numberOfBytesWritten;
 		}
 		template<typename T> T ReadMemory(DWORD address)
 		{
-			T result;
+			T result = 0;
 			size_t numberOfBytesRead;
 			ReadProcessMemory(_hProcess, (LPVOID)address, &result, sizeof(T), &numberOfBytesRead);
-			if (GetLastError() != 0) {
-				std::cout << "WriteMemory Error with error: " << GetLastError() << "\n";
-				throw std::exception("ReadMemory Error with error: " + GetLastError());
-			}
+
 			return result;
 		}
 
@@ -77,7 +71,7 @@ namespace dbg {
 
 		DWORD64 ReadPointer(DWORD_PTR baseAddres, DWORD_PTR offsets[], size_t lenght);
 		std::string ReadString(DWORD_PTR address);
-		PMEMORY_BASIC_INFORMATION GetRegionInformationByAddress(DWORD_PTR address);
+		MEMORY_BASIC_INFORMATION GetRegionInformationByAddress(DWORD_PTR address);
 		DWORD_PTR GetModuleAddressByName(std::string name);
 		Thread* GetMainThread();
 		
