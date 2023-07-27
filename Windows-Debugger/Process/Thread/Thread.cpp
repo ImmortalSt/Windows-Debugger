@@ -44,7 +44,7 @@ void dbg::Thread::HardwareDebugLoop()
 
     }
 }
-void dbg::Thread::SetHardwareBreakpoint(DWORD_PTR address, BreakPointCondition condition, int len, ContextFunction observer)
+void dbg::Thread::SetHardwareBreakpoint(DWORD_PTR address, HardwareBreakpointCondition condition, int len, ContextFunction observer)
 {
     // https://codeby.net/threads/skrytyj-potencial-registrov-otladki-dr0-dr7.74387/
 
@@ -183,14 +183,14 @@ void dbg::Thread::EnableHardwareBreakPoint()
 
 
 void dbg::Thread::SetSoftwareExecutionBreakpoint(DWORD_PTR address, ContextFunction observer) {
-    _softwareExecutionBreakpoint[address] = SoftwareBreakpoint { address, observer, 0 };
+    _softwareExecutionBreakpoints[address] = SoftwareBreakpoint { address, observer, 0 };
 }
 void dbg::Thread::DelSoftwareExecutionBreakpoint(DWORD_PTR address) {
-    _softwareExecutionBreakpoint.erase(address);
+    _softwareExecutionBreakpoints.erase(address);
 }
 void dbg::Thread::SoftwareExecutionDebugLoop() {
     HANDLE _hProcess = OpenProcess(PROCESS_ALL_ACCESS, false, _processId);
-    for (auto& [address, breakpoint] : _softwareExecutionBreakpoint) {
+    for (auto& [address, breakpoint] : _softwareExecutionBreakpoints) {
         PMEMORY_BASIC_INFORMATION segmentInfo = new MEMORY_BASIC_INFORMATION;
         VirtualQueryEx(_hProcess, (LPVOID)address, segmentInfo, 0x100);
         int a = GetLastError();
@@ -228,8 +228,8 @@ void dbg::Thread::SoftwareExecutionDebugLoop() {
 
         if (DebugEv.dwDebugEventCode == EXCEPTION_DEBUG_EVENT) {
             DWORD_PTR rip = context.Rip - 1;
-            auto it = _softwareExecutionBreakpoint.find(rip);
-            if (it != _softwareExecutionBreakpoint.end()) 
+            auto it = _softwareExecutionBreakpoints.find(rip);
+            if (it != _softwareExecutionBreakpoints.end()) 
             {                    
                 WriteMemory(rip, it->second.oldByte);
                 context.Rip -= 1;
@@ -237,7 +237,7 @@ void dbg::Thread::SoftwareExecutionDebugLoop() {
                 DoDebugStep();
                 auto d = GetContext();
                 WriteMemory(rip, 0xCC);
-                futureFunction = it->second.fucntion;
+                futureFunction = it->second.function;
             }
         }
         ContinueDebugEvent(DebugEv.dwProcessId, DebugEv.dwThreadId, DBG_CONTINUE); // There should be DebugEv.dwProcessId and DebugEv.dwThreadId. Not _processId and _threadId.
@@ -247,6 +247,78 @@ void dbg::Thread::SoftwareExecutionDebugLoop() {
     }
 }
 
+void dbg::Thread::SetMemoryProtectionBreakpoint(DWORD_PTR address, size_t size, ContextFunction observer, MemoryProtectionBreakpointCondition condition)
+{
+    _memoryProtectionBreakpoints.push_back(MemoryProtectionBreakpoint {address, size, condition, observer, 0});
+}
+void dbg::Thread::DelMemoryProtectionBreakpoint(DWORD_PTR address)
+{
+    for (std::list<MemoryProtectionBreakpoint>::iterator it = _memoryProtectionBreakpoints.begin(); it != _memoryProtectionBreakpoints.end(); it++) {
+        if (it->address == address) {
+            _memoryProtectionBreakpoints.erase(it);
+            break;
+        }
+    }
+}
+void dbg::Thread::MemoryProtectionDebugLoop()
+{
+    // #define PAGE_NOACCESS           0x01    
+    // #define PAGE_READONLY           0x02    
+    // #define PAGE_READWRITE          0x04    
+    // #define PAGE_WRITECOPY          0x08    
+    // #define PAGE_EXECUTE            0x10    
+    // #define PAGE_EXECUTE_READ       0x20    
+    // #define PAGE_EXECUTE_READWRITE  0x40    
+    // #define PAGE_EXECUTE_WRITECOPY  0x80    
+    // #define PAGE_GUARD             0x100    
+    // #define PAGE_NOCACHE           0x200    
+    // #define PAGE_WRITECOMBINE      0x400   
+    HANDLE _hProcess = OpenProcess(PROCESS_ALL_ACCESS, false, _processId);
+    for (auto& bp : _memoryProtectionBreakpoints) {
+        DWORD newCondition = 0;
+
+        if (bp.condition == MemoryProtectionBreakpointCondition::EXECUTE) {
+            newCondition = PAGE_READWRITE;
+        }
+
+        VirtualProtectEx(_hProcess, (LPVOID)bp.address, bp.size, newCondition, &bp.oldProtection);
+
+
+    }
+    CloseHandle(_hProcess);
+
+    DEBUG_EVENT DebugEv;
+
+    ZeroMemory(&DebugEv, sizeof(DebugEv));
+    DebugEv.dwThreadId = _threadId;
+    DebugEv.dwProcessId = _processId;
+
+    while (true) {
+        ContextFunction futureFunction = 0;
+
+        WaitForDebugEventEx(&DebugEv, INFINITE);
+
+        auto context = GetContext();
+
+        if (DebugEv.u.Exception.ExceptionRecord.ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
+            DWORD_PTR ExceptionAddress = (DWORD_PTR) DebugEv.u.Exception.ExceptionRecord.ExceptionAddress;
+            for (auto& bp : _memoryProtectionBreakpoints) {
+                if (ExceptionAddress >= bp.address && ExceptionAddress <= bp.address + bp.size) {
+                    futureFunction = bp.function;
+                    break;
+                }
+            }
+        }
+
+
+        ContinueDebugEvent(DebugEv.dwProcessId, DebugEv.dwThreadId, DBG_CONTINUE); // There should be DebugEv.dwProcessId and DebugEv.dwThreadId. Not _processId and _threadId.
+
+        if (futureFunction)
+            futureFunction(context);
+
+    }
+
+}
 
 // should be called between WaitForDebugEventEx and ContinueDebugEvent
 void dbg::Thread::DoDebugStep() 
