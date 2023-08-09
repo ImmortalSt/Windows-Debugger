@@ -1,6 +1,7 @@
 # External Process Debugger for Windows
 
 ###### _It is project for education._
+######The architecture of this project is worse than for Linux
 \
 The project serves as a library for debugging processes, supporting three types of breakpoints:
 - Hardware breakpoint
